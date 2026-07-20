@@ -1,0 +1,49 @@
+{
+  "name": "pi-localllm-provider",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Wizard-based provider setup for local OpenAI-compatible LLM servers (vLLM, Ollama, LM Studio, llama.cpp, …)",
+  "main": "index.ts",
+  "license": "MIT",
+  "author": "Eric Qian",
+  "homepage": "https://github.com/freeyoung/pi-localllm-provider#readme",
+  "bugs": "https://github.com/freeyoung/pi-localllm-provider/issues",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/freeyoung/pi-localllm-provider.git"
+  },
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "llm",
+    "vllm",
+    "ollama",
+    "lm-studio",
+    "llama.cpp",
+    "omlx",
+    "mtplx",
+    "mlx"
+  ],
+  "files": [
+    "index.ts",
+    "detect.ts",
+    "keychain.ts",
+    "README.md",
+    "LICENSE"
+  ],
+  "pi": {
+    "extensions": ["./index.ts"]
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.1",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.7"
+  }
+}
