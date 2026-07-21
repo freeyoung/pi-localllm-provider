@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatModelLine, modelsHeading, normalizeBaseUrl } from "./index.ts";
+import { formatModelLine, modelIdsChanged, modelsHeading, normalizeBaseUrl } from "./index.ts";
 
 describe("normalizeBaseUrl", () => {
   it("appends /v1 when missing", () => {
@@ -123,6 +123,43 @@ describe("formatModelLine", () => {
         quantization: "Q4_K_M",
       }),
     ).toBe("  • m  (ctx 4k, max 2k, 4.6G, Q4_K_M, reasoning, vision)");
+  });
+});
+
+describe("modelIdsChanged", () => {
+  const baseModel = {
+    id: "m1",
+    name: "m1",
+    contextWindow: 4096,
+    maxTokens: 2048,
+    reasoning: false,
+    input: ["text"] as ("text" | "image")[],
+  };
+
+  it("is false when the same single model is refreshed with new metadata", () => {
+    expect(modelIdsChanged([baseModel], [{ ...baseModel, contextWindow: 8192 }])).toBe(false);
+  });
+
+  it("is false when the same set of models comes back in a different order", () => {
+    const a = { ...baseModel, id: "a" };
+    const b = { ...baseModel, id: "b" };
+    expect(modelIdsChanged([a, b], [b, a])).toBe(false);
+  });
+
+  it("is true when the model count changes", () => {
+    const a = { ...baseModel, id: "a" };
+    const b = { ...baseModel, id: "b" };
+    expect(modelIdsChanged([a], [a, b])).toBe(true);
+  });
+
+  it("is true when a same-count refresh swaps in a different model id", () => {
+    const a = { ...baseModel, id: "a" };
+    const c = { ...baseModel, id: "c" };
+    expect(modelIdsChanged([a], [c])).toBe(true);
+  });
+
+  it("is false for two empty lists", () => {
+    expect(modelIdsChanged([], [])).toBe(false);
   });
 });
 

@@ -102,6 +102,16 @@ function formatBytes(bytes: number): string {
   return `${(bytes / 1024 ** 3).toFixed(1)}G`;
 }
 
+// Compares model ID sets, ignoring order — used to tell "the server got new
+// models" apart from "the same model's metadata got refreshed". Only the
+// former means whatever model the user had selected may no longer exist,
+// which is the moment a switch prompt actually makes sense.
+export function modelIdsChanged(before: LLMModel[], after: LLMModel[]): boolean {
+  if (before.length !== after.length) return true;
+  const beforeIds = new Set(before.map((m) => m.id));
+  return after.some((m) => !beforeIds.has(m.id));
+}
+
 // "✓ " when known-loaded, "○ " when known-not-loaded, "" when the backend
 // doesn't report loaded state at all (mtplx/llamacpp/vllm/generic OpenAI —
 // see detect.ts for why).
@@ -393,6 +403,7 @@ async function showServerMenu(
       }
 
       const updated: LLMServer = { ...server, apiType: result.apiType, models: result.models };
+      const modelsChanged = modelIdsChanged(server.models, updated.models);
       const s = readSettings();
       s.servers = s.servers.map((sv) => (sv.id === serverId ? updated : sv));
       writeSettings(s);
@@ -402,6 +413,14 @@ async function showServerMenu(
         `${server.name} (${apiTypeLabel(result.apiType)}): ${result.models.length} model(s) - ${result.models.map((m) => m.name).join(", ")}`,
         "info",
       );
+
+      // Same metadata refreshed for the same model(s) isn't worth a prompt.
+      // But if the server now serves different models entirely, whatever
+      // was previously selected may no longer exist — that's the case a
+      // switch prompt is for, same as Add/Reconfigure.
+      if (modelsChanged && updated.models.length === 1) {
+        await offerModelSwitch(pi, ctx, updated, updated.models[0]);
+      }
       continue;
     }
 
@@ -418,7 +437,13 @@ async function showServerMenu(
       writeSettings(s);
       unregisterServer(pi, server);
       registerServer(pi, updated);
-      ctx.ui.notify(`${updated.name} updated. Switch models with /model.`, "info");
+      ctx.ui.notify(
+        `${updated.name} updated.` + (updated.models.length > 1 ? " Switch models with /model." : ""),
+        "info",
+      );
+      if (updated.models.length === 1) {
+        await offerModelSwitch(pi, ctx, updated, updated.models[0]);
+      }
       return;
     }
 
@@ -426,6 +451,32 @@ async function showServerMenu(
       if (await removeServer(pi, ctx, server)) return;
       continue;
     }
+  }
+}
+
+// ─── Switch-on-add ────────────────────────────────────────────────
+
+async function offerModelSwitch(
+  pi: ExtensionAPI,
+  ctx: ExtensionCommandContext,
+  server: LLMServer,
+  model: LLMModel,
+): Promise<void> {
+  const switchNow = await ctx.ui.confirm(
+    `Switch to ${model.name} now?`,
+    `Makes it the active model for this session. You can always change it later with /model.`,
+  );
+  if (!switchNow) return;
+
+  const resolved = ctx.modelRegistry.find(toProviderId(server), model.id);
+  if (!resolved) {
+    ctx.ui.notify("Couldn't find the newly registered model — switch with /model instead.", "warning");
+    return;
+  }
+
+  const ok = await pi.setModel(resolved);
+  if (!ok) {
+    ctx.ui.notify("Couldn't switch — no API key available for this model.", "warning");
   }
 }
 
@@ -465,9 +516,19 @@ async function showMainMenu(
       writeSettings(s);
       registerServer(pi, server);
       ctx.ui.notify(
-        `${server.name} added - ${server.models.length} model(s): ${server.models.map((m) => m.name).join(", ")}. Switch with /model.`,
+        `${server.name} added - ${server.models.length} model(s): ${server.models.map((m) => m.name).join(", ")}.` +
+          (server.models.length > 1 ? " Switch with /model." : ""),
         "info",
       );
+
+      // Only offer to switch when exactly one model is in play — either it
+      // was the server's only model, or the user picked one specifically in
+      // the wizard. With several enabled at once (the "All" option) there's
+      // no clear single model to switch to, so this is skipped in favor of
+      // the existing /model flow.
+      if (server.models.length === 1) {
+        await offerModelSwitch(pi, ctx, server, server.models[0]);
+      }
       continue;
     }
 

@@ -56,7 +56,7 @@ Models:  (✓ = loaded in memory, ○ = will be loaded on first message)
 2. **Base URL** — `http://host:8000`, `.../v1`, or a bare `host:8000` (scheme defaults to `http://`)
 3. **API key** — blank if unauthenticated. A plain key on macOS offers Keychain storage — see [API key storage](#api-key-storage)
 
-Then the [detection chain](#backend-detection) runs and you pick which discovered models to enable. Switch between them with `/model`.
+Then the [detection chain](#backend-detection) runs and you pick which discovered models to enable. If that's a single model, you'll be asked whether to switch to it right away; otherwise, switch between them with `/model`.
 
 ## Multiple servers
 
@@ -65,7 +65,7 @@ Each server registers as its own Pi provider — add as many as you like.
 ## FAQ
 
 **I added a server, but Pi's still talking to the old model — what gives?**
-Adding or refreshing a server doesn't switch you over to it. Run `/model` and pick one of the new server's models to actually start using it.
+**＋ Add server** and **✎ Reconfigure** both ask, but only when you end up with a single enabled model. **↺ Refresh** normally doesn't — it's just resyncing metadata on a server you're likely already using — unless the refreshed model IDs actually differ from before (the server started serving something else entirely), in which case whatever you had selected may no longer exist, and it asks too. If you enabled several models, or said no to the prompt, run `/model` and pick one yourself.
 
 **The context window looks wrong. Can I fix it?**
 It comes from whichever backend endpoint got detected (defaulting to 32,768 if nothing usable came back). Easiest fix is at the server/backend config, then **↺ Refresh** to pick up the corrected value.
