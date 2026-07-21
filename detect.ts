@@ -387,6 +387,12 @@ export async function detectOllama(
 // *also* has max_model_len on at least one entry (OpenAI's real API never
 // has this field). No loaded/unloaded distinction exists — one process,
 // one model — so loaded is left undefined, same as the generic OpenAI probe.
+//
+// vLLM has no public API for vision/reasoning capability (its debug-only
+// /server_info endpoint would carry it, but that's undocumented, gated
+// behind VLLM_SERVER_DEV_MODE=1, and known to crash on some setups — not
+// something to build detection on), so both always default to false/text.
+// Use ✎ Edit model capabilities in the TUI to override by hand.
 
 interface VllmVersion {
   version?: string;

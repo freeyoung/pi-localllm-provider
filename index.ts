@@ -147,6 +147,22 @@ function registerServer(pi: ExtensionAPI, server: LLMServer): void {
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       contextWindow: m.contextWindow,
       maxTokens: m.maxTokens,
+      // `reasoning: true` here only means "this model can produce reasoning
+      // output" (what our detectors observe) — it says nothing about whether
+      // the server speaks the rest of OpenAI's o1-style reasoning-model
+      // conventions, which none of our detectors check. pi-ai defaults both
+      // of these to true for any non-hosted URL once reasoning is true:
+      //   - supportsReasoningEffort: attaches a reasoning_effort request
+      //     param to every message; strict backends (e.g. vLLM without a
+      //     --reasoning-parser) 400 on the unrecognized field.
+      //   - supportsDeveloperRole: sends the system prompt with role
+      //     "developer" instead of "system"; a model's chat template that
+      //     only handles "system" then rejects the request entirely
+      //     ("Unexpected message role").
+      // Disabling both keeps `reasoning` read-only: response parsing
+      // (reasoning_content, etc.) still works if the backend sends it, but
+      // nothing about the outgoing request changes because of it.
+      compat: { supportsReasoningEffort: false, supportsDeveloperRole: false },
     })),
   });
 }
@@ -262,9 +278,73 @@ async function runWizard(
   };
 }
 
+// ─── Manual capability override ────────────────────────────────────
+// Some backends can't be asked whether a model supports vision/reasoning
+// (see detect.ts's vLLM note) — this lets a user fix the tags by hand from
+// the TUI instead of editing settings.json directly. Like any hand edit,
+// it sticks until the next ↺ Refresh overwrites it with fresh detected
+// values.
+
+async function editModelCapabilities(
+  pi: ExtensionAPI,
+  ctx: ExtensionCommandContext,
+  serverId: string,
+): Promise<void> {
+  const server = readSettings().servers.find((s) => s.id === serverId);
+  if (!server || server.models.length === 0) return;
+
+  let modelId = server.models[0].id;
+  if (server.models.length > 1) {
+    const picked = await ctx.ui.select(
+      "Which model?",
+      server.models.map((m) => m.id),
+    );
+    if (!picked) return;
+    modelId = picked;
+  }
+
+  while (true) {
+    const current = readSettings()
+      .servers.find((s) => s.id === serverId)
+      ?.models.find((m) => m.id === modelId);
+    if (!current) return;
+
+    const vision = current.input.includes("image");
+    const OPT_VISION = `Vision: ${vision ? "on" : "off"}  (tap to turn ${vision ? "off" : "on"})`;
+    const OPT_REASONING = `Reasoning: ${current.reasoning ? "on" : "off"}  (tap to turn ${current.reasoning ? "off" : "on"})`;
+    const OPT_DONE = "✓ Done";
+
+    const picked = await ctx.ui.select(
+      `${current.name} - manual capability override\nOverwritten by the next ↺ Refresh.`,
+      [OPT_VISION, OPT_REASONING, OPT_DONE],
+    );
+    if (!picked || picked === OPT_DONE) break;
+
+    const s = readSettings();
+    const sv = s.servers.find((sv) => sv.id === serverId);
+    if (!sv) return;
+    sv.models = sv.models.map((m) => {
+      if (m.id !== modelId) return m;
+      if (picked === OPT_VISION) {
+        return { ...m, input: vision ? (["text"] as const) : (["text", "image"] as const) };
+      }
+      return { ...m, reasoning: !m.reasoning };
+    });
+    writeSettings(s);
+  }
+
+  const s = readSettings();
+  const sv = s.servers.find((sv) => sv.id === serverId);
+  if (!sv) return;
+  unregisterServer(pi, server);
+  registerServer(pi, sv);
+  ctx.ui.notify("Capabilities updated.", "info");
+}
+
 // ─── Server sub-menu ──────────────────────────────────────────────
 
 const OPT_REFRESH = "↺ Refresh model list from server";
+const OPT_CAPS    = "✎ Edit model capabilities (vision / reasoning)";
 const OPT_EDIT    = "✎ Reconfigure (name / URL / key)";
 const OPT_REMOVE  = "✕ Remove this server";
 const OPT_BACK    = "← Back";
@@ -286,7 +366,7 @@ async function showServerMenu(
 
     const picked = await ctx.ui.select(
       `${server.name}  [${backend}]\nURL: ${server.baseUrl}\n${modelsHeading(server.models)}\n${modelSummary}`,
-      [OPT_REFRESH, OPT_EDIT, OPT_REMOVE, OPT_BACK],
+      [OPT_REFRESH, ...(server.models.length > 0 ? [OPT_CAPS] : []), OPT_EDIT, OPT_REMOVE, OPT_BACK],
     );
 
     if (!picked || picked === OPT_BACK) return;
@@ -322,6 +402,11 @@ async function showServerMenu(
         `${server.name} (${apiTypeLabel(result.apiType)}): ${result.models.length} model(s) - ${result.models.map((m) => m.name).join(", ")}`,
         "info",
       );
+      continue;
+    }
+
+    if (picked === OPT_CAPS) {
+      await editModelCapabilities(pi, ctx, serverId);
       continue;
     }
 

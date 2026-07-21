@@ -42,6 +42,7 @@ Models:  (✓ = loaded in memory, ○ = will be loaded on first message)
   • ○ Qwen2.5-Coder-32B-Instruct  (ctx 32k, max 8k, 18.2G, reasoning, vision)
 ──────────────────────────────────────────────────
   ↺ Refresh model list from server
+  ✎ Edit model capabilities (vision / reasoning)
   ✎ Reconfigure (name / URL / key)
   ✕ Remove this server
   ← Back
@@ -98,6 +99,10 @@ No — every configured server re-registers automatically on startup.
 Only oMLX, LM Studio, and Ollama report loaded state — MTPLX, llama.cpp, and vLLM each serve exactly one model, so there's no loaded/unloaded distinction to make.
 
 vLLM's `/v1/models` never carries reasoning or vision data; its detector exists only to label the backend `[vLLM]` correctly, not to unlock extra metadata.
+
+**Known limitation — vLLM vision/reasoning.** Nothing in vLLM's public API says whether the served model supports images or reasoning, so both always come back `false`/text-only for `[vLLM]` servers, even for VLMs. (vLLM does have an internal `/server_info` debug endpoint that carries this, gated behind a `VLLM_SERVER_DEV_MODE=1` env var — but it's undocumented, dumps your full server config on request, and its system-info collection is known to crash on some setups, so this extension deliberately doesn't probe it.) If a tag is wrong for your model, use **✎ Edit model capabilities** in the server's sub-menu to flip vision/reasoning by hand — same effect as editing `settings.json` directly, just without leaving Pi. It survives until the next **↺ Refresh**, which overwrites it with whatever the server reports.
+
+Flipping `reasoning` to `true` (auto-detected or by hand) only changes how *responses* are parsed. This extension always disables Pi's OpenAI o1-style reasoning-model conventions — the `reasoning_effort` request param and `developer`-role system prompts — for every model it registers, since none of the detection paths above actually confirm the server speaks either convention. So toggling reasoning on is safe to try even against a server that doesn't really support it: nothing about the outgoing request changes because of it.
 
 ## Configuration
 

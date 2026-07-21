@@ -481,6 +481,7 @@ describe("detectVllm", () => {
       ],
     });
   });
+
 });
 
 describe("detectOpenAI", () => {
