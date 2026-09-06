@@ -160,7 +160,7 @@ async function postJson<T>(
 // budget reasoning and returns no answer at all, which then reads as a
 // truncated turn and gets retried into the same wall. The cost of the
 // opposite mistake is only a slower failure, so the generous side wins.
-function capTokens(contextWindow: number, reasoning = false): number {
+export function capTokens(contextWindow: number, reasoning = false): number {
   return Math.min(Math.floor(contextWindow / 2), reasoning ? 65536 : 8192);
 }
 

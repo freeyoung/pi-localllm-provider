@@ -42,7 +42,7 @@ Models:  (✓ = loaded in memory, ○ = will be loaded on first message)
   • ○ Qwen2.5-Coder-32B-Instruct  (ctx 32k, max 8k, 18.2G, reasoning, vision)
 ──────────────────────────────────────────────────
   ↺ Refresh model list from server
-  ✎ Edit model capabilities (vision / reasoning)
+  ✎ Edit model capabilities (vision / reasoning / context / temperature)
   ✎ Reconfigure (name / URL / key)
   ✕ Remove this server
   ← Back
@@ -69,6 +69,9 @@ Each server registers as its own Pi provider — add as many as you like.
 
 **The context window looks wrong. Can I fix it?**
 It comes from whichever backend endpoint got detected (defaulting to 32,768 if nothing usable came back). Easiest fix is at the server/backend config, then **↺ Refresh** to pick up the corrected value.
+
+**The server doesn't report a context window at all (e.g. llama-swap), so Pi always assumes the 32,768 default?**
+Use **✎ Edit model capabilities** in the server's sub-menu and pick **Max context** to set the real value by hand. Unlike the other fields there, this one **survives ↺ Refresh**: the override is stored separately and re-applied to the freshly detected model by id, so you can refresh as often as you like without losing it. It shows in the model list as a `*` next to the context window (e.g. `ctx 128k*`). Empty input removes the override and falls back to the server-reported value.
 
 **Does this work with Ollama?**
 Yes, and properly — it talks to Ollama's native API, not just its OpenAI-compatible shim, so context window, reasoning, vision, size, quantization, and loaded state all get detected automatically. Point it at `http://localhost:11434`, with or without `/v1`.
@@ -219,6 +222,7 @@ Stored under the `localllm` key in `~/.pi/agent/settings.json`:
             "id": "Qwen/Qwen2.5-Coder-7B-Instruct",
             "name": "Qwen2.5-Coder-7B-Instruct",
             "contextWindow": 32768,
+            "contextWindowOverride": 131072,
             "maxTokens": 8192,
             "reasoning": false,
             "input": ["text"]
@@ -231,6 +235,14 @@ Stored under the `localllm` key in `~/.pi/agent/settings.json`:
 ```
 
 Hand edits stick until the next **↺ Refresh**, which overwrites every model field with fresh live values — the server is always the source of truth. Useful for correcting a field the server misreports, or for dropping a model locally without changing anything on the server.
+
+### Overriding the context window manually
+
+The one exception to "refresh overwrites everything" is the field above: `contextWindowOverride`. A server that never reports a window — like an OpenAI-compatible **llama-swap** proxy — lands on this extension's 32,768 fallback, and no config change on the backend can fix that because nothing it publishes carries the number. Set it by hand with **✎ Edit model capabilities → Max context** in the server's sub-menu (one override per model, since model ids are unique). The override is stored *next to* `contextWindow`, which keeps the server-reported value, so:
+
+- **↺ Refresh** and **✎ Reconfigure** re-attach the override to the re-detected model by id — it is never wiped.
+- Clearing the override (empty input) drops the field and falls back to the server-reported window.
+- While an override is active, the model's max-output cap is re-derived from it with the same half-window rule as everywhere else (`capTokens`), so a raised window raises the cap too unless the reasoning cap applies.
 
 ### Why `maxTokens` is so much larger for a reasoning model
 

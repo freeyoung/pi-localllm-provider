@@ -2,7 +2,14 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-c
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
-import { detectModels, type ApiType, type DetectResult, type ThinkingLevel } from "./detect.ts";
+import {
+  capTokens,
+  detectModels,
+  type ApiType,
+  type DetectResult,
+  type DiscoveredModel,
+  type ThinkingLevel,
+} from "./detect.ts";
 import { deleteFromKeychain, isDirectApiKey, keychainCommand, storeInKeychain } from "./keychain.ts";
 
 // ─── Types ────────────────────────────────────────────────────────
@@ -12,6 +19,12 @@ interface LLMModel {
   name: string;
   contextWindow: number;
   maxTokens: number;
+  // A manually entered value (via ✎ Override max context length) that takes
+  // precedence over `contextWindow`. `contextWindow` itself keeps the value
+  // the server reported, so the override can be cleared later and survives a
+  // ↺ Refresh re-attached to the freshly detected model. Only backends that
+  // can't report a context window (e.g. llama-swap proxies) need it.
+  contextWindowOverride?: number;
   reasoning: boolean;
   input: ("text" | "image")[];
   // Not every backend can report these — undefined means "unknown", not "no".
@@ -100,6 +113,39 @@ export function apiTypeLabel(apiType: ApiType): string {
   }
 }
 
+// The two numbers Pi actually uses for a model: the context window and the
+// output cap, with a manual contextWindowOverride winning over whatever the
+// server reported (see LLMModel.contextWindowOverride). maxTokens only
+// derives from the window when an override is active — otherwise the
+// detector's own value (which may be a backend-reported limit, not capTokens)
+// stands.
+function effectiveContextWindow(m: LLMModel): number {
+  return m.contextWindowOverride ?? m.contextWindow;
+}
+function effectiveMaxTokens(m: LLMModel): number {
+  return m.contextWindowOverride !== undefined
+    ? capTokens(m.contextWindowOverride, m.reasoning)
+    : m.maxTokens;
+}
+
+// Re-binds any user context-window overrides onto freshly detected models by
+// matching model id. `from` is the previously stored models (the ones that may
+// carry overrides), `detected` the result of a ↺ Refresh. The detected
+// contextWindow is kept untouched so the override remains clearable and always
+// re-attaches to the freshest value (a server that later reports a window does
+// nothing to the stored override).
+export function applyContextOverrides(
+  from: LLMModel[],
+  detected: DiscoveredModel[],
+): LLMModel[] {
+  return detected.map((d) => {
+    const prev = from.find((e) => e.id === d.id);
+    return prev?.contextWindowOverride !== undefined
+      ? { ...d, contextWindowOverride: prev.contextWindowOverride }
+      : d;
+  });
+}
+
 function formatK(n: number): string {
   return n >= 1024 ? `${Math.round(n / 1024)}k` : `${n}`;
 }
@@ -140,7 +186,10 @@ export function formatModelLine(m: LLMModel): string {
   const caps = [m.reasoning ? "reasoning" : null, m.input.includes("image") ? "vision" : null].filter(
     (c): c is string => c !== null,
   );
-  const parts = [`ctx ${formatK(m.contextWindow)}`, `max ${formatK(m.maxTokens)}`];
+  // A trailing "*" marks a manually overridden context window, so it's clear
+  // from the listing which value came from the server and which a human set.
+  const ctxMarker = m.contextWindowOverride !== undefined ? "*" : "";
+  const parts = [`ctx ${formatK(effectiveContextWindow(m))}${ctxMarker}`, `max ${formatK(effectiveMaxTokens(m))}`];
   // A zero size means "not reported", not a zero-byte model — SGLang's Ollama
   // shim sends size: 0 for the model it is actively serving. Detectors drop it
   // now, but servers configured before that still have the 0 on disk.
@@ -164,8 +213,8 @@ function registerServer(pi: ExtensionAPI, server: LLMServer): void {
       reasoning: m.reasoning,
       input: m.input,
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-      contextWindow: m.contextWindow,
-      maxTokens: m.maxTokens,
+      contextWindow: effectiveContextWindow(m),
+      maxTokens: effectiveMaxTokens(m),
       // `reasoning: true` here only means "this model can produce reasoning
       // output" (what our detectors observe) — it says nothing about whether
       // the server speaks the rest of OpenAI's o1-style reasoning-model
@@ -323,12 +372,18 @@ async function runWizard(
   };
 }
 
-// ─── Manual capability override ────────────────────────────────────
+// ─── Manual capability & context override ─────────────────────────
 // Some backends can't be asked whether a model supports vision/reasoning
-// (see detect.ts's vLLM note) — this lets a user fix the tags by hand from
-// the TUI instead of editing settings.json directly. Like any hand edit,
-// it sticks until the next ↺ Refresh overwrites it with fresh detected
-// values.
+// (see detect.ts's vLLM note), and some can't report a context window at
+// all (llama-swap and other OpenAI-compat proxies, which always come back
+// as whatever 32768 fallback detect.ts invented) — this lets a user fix
+// all four by hand from the TUI instead of editing settings.json directly.
+//
+// The vision/reasoning/temperature tags are like any hand edit: they stick
+// until the next ↺ Refresh overwrites them with fresh detected values. The
+// context override is different — it is stored separately
+// (contextWindowOverride) and re-attached to the freshly detected model by
+// id in applyContextOverrides, so it survives refresh.
 
 async function editModelCapabilities(
   pi: ExtensionAPI,
@@ -356,14 +411,16 @@ async function editModelCapabilities(
 
     const vision = current.input.includes("image");
     const temp = current.samplingParams?.temperature;
+    const overridden = current.contextWindowOverride !== undefined;
     const OPT_VISION = `Vision: ${vision ? "on" : "off"}  (tap to turn ${vision ? "off" : "on"})`;
     const OPT_REASONING = `Reasoning: ${current.reasoning ? "on" : "off"}  (tap to turn ${current.reasoning ? "off" : "on"})`;
+    const OPT_CONTEXT = `Max context: ${formatK(effectiveContextWindow(current))}${overridden ? " (manual)" : ""}  (tap to change)`;
     const OPT_TEMP = `Temperature: ${temp ?? "server default"}  (tap to change)`;
     const OPT_DONE = "✓ Done";
 
     const picked = await ctx.ui.select(
-      `${current.name} - manual capability override\nOverwritten by the next ↺ Refresh.`,
-      [OPT_VISION, OPT_REASONING, OPT_TEMP, OPT_DONE],
+      `${current.name} - manual overrides\nVision / reasoning / temperature reset on ↺ Refresh; the context override persists.`,
+      [OPT_VISION, OPT_REASONING, OPT_CONTEXT, OPT_TEMP, OPT_DONE],
     );
     if (!picked || picked === OPT_DONE) break;
 
@@ -389,6 +446,29 @@ async function editModelCapabilities(
       }
     }
 
+    let nextCtxOverride: number | undefined;
+    let clearCtxOverride = false;
+    if (picked === OPT_CONTEXT) {
+      const raw = await ctx.ui.input(
+        `Max context length for "${current.name}" (tokens)\n` +
+          `Current: ${effectiveContextWindow(current).toLocaleString()}  (${overridden ? "manual override" : "server-reported " + current.contextWindow.toLocaleString()})\n` +
+          "Empty input removes the override and restores the server-reported value.",
+        overridden ? String(current.contextWindowOverride) : "",
+      );
+      if (raw === undefined) continue;
+      const trimmed = raw.trim();
+      if (trimmed === "") {
+        clearCtxOverride = true;
+      } else {
+        const parsed = Number(trimmed);
+        if (!Number.isInteger(parsed) || parsed < 1) {
+          ctx.ui.notify("Context length must be a positive integer.", "error");
+          continue;
+        }
+        nextCtxOverride = parsed;
+      }
+    }
+
     const s = readSettings();
     const sv = s.servers.find((sv) => sv.id === serverId);
     if (!sv) return;
@@ -396,6 +476,13 @@ async function editModelCapabilities(
       if (m.id !== modelId) return m;
       if (picked === OPT_VISION) {
         return { ...m, input: vision ? (["text"] as const) : (["text", "image"] as const) };
+      }
+      if (picked === OPT_CONTEXT) {
+        if (clearCtxOverride) {
+          const { contextWindowOverride: _drop, ...rest } = m;
+          return rest;
+        }
+        return { ...m, contextWindowOverride: nextCtxOverride };
       }
       if (picked === OPT_TEMP) {
         const { samplingParams: _dropped, ...rest } = m;
@@ -417,7 +504,7 @@ async function editModelCapabilities(
 // ─── Server sub-menu ──────────────────────────────────────────────
 
 const OPT_REFRESH = "↺ Refresh model list from server";
-const OPT_CAPS    = "✎ Edit model capabilities (vision / reasoning / temperature)";
+const OPT_CAPS    = "✎ Edit model capabilities (vision / reasoning / context / temperature)";
 const OPT_EDIT    = "✎ Reconfigure (name / URL / key)";
 const OPT_REMOVE  = "✕ Remove this server";
 const OPT_BACK    = "← Back";
@@ -465,7 +552,11 @@ async function showServerMenu(
         continue;
       }
 
-      const updated: LLMServer = { ...server, apiType: result.apiType, models: result.models };
+      const updated: LLMServer = {
+        ...server,
+        apiType: result.apiType,
+        models: applyContextOverrides(server.models, result.models),
+      };
       const modelsChanged = modelIdsChanged(server.models, updated.models);
       const s = readSettings();
       s.servers = s.servers.map((sv) => (sv.id === serverId ? updated : sv));
@@ -493,8 +584,14 @@ async function showServerMenu(
     }
 
     if (picked === OPT_EDIT) {
-      const updated = await runWizard(ctx, server);
-      if (!updated) continue;
+      const updatedRaw = await runWizard(ctx, server);
+      if (!updatedRaw) continue;
+      // Reconfigure re-detects from the server, so re-attach any manual
+      // context-window overrides the same way a ↺ Refresh does.
+      const updated: LLMServer = {
+        ...updatedRaw,
+        models: applyContextOverrides(server.models, updatedRaw.models),
+      };
       const s = readSettings();
       s.servers = s.servers.map((sv) => (sv.id === serverId ? updated : sv));
       writeSettings(s);
