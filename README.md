@@ -42,7 +42,7 @@ Models:  (✓ = loaded in memory, ○ = will be loaded on first message)
   • ○ Qwen2.5-Coder-32B-Instruct  (ctx 32k, max 8k, 18.2G, reasoning, vision)
 ──────────────────────────────────────────────────
   ↺ Refresh model list from server
-  ✎ Edit model capabilities (vision / reasoning)
+  ✎ Edit model capabilities (vision / reasoning / context / max output / temperature)
   ✎ Reconfigure (name / URL / key)
   ✕ Remove this server
   ← Back
@@ -69,6 +69,12 @@ Each server registers as its own Pi provider — add as many as you like.
 
 **The context window looks wrong. Can I fix it?**
 It comes from whichever backend endpoint got detected (defaulting to 32,768 if nothing usable came back). Easiest fix is at the server/backend config, then **↺ Refresh** to pick up the corrected value.
+
+**The server doesn't report a context window at all (e.g. llama-swap), so Pi always assumes the 32,768 default?**
+Use **✎ Edit model capabilities** in the server's sub-menu and pick **Max context** to set the real value by hand. It shows in the model list as a `*` next to the context window (e.g. `ctx 128k*`), and — like every manual value in that screen — **survives ↺ Refresh**: it's stored separately and re-applied to the freshly detected model by id, so you can refresh as often as you like without losing it. Empty input removes the override and falls back to the server-reported value.
+
+**The max output cap keeps reverting to the default after refresh?**
+A manual **Max output** set from **✎ Edit model capabilities** persists exactly like the Max context override — see [Editing capabilities manually](#editing-capabilities-manually). What doesn't survive is hand-editing the raw `maxTokens` field in `settings.json`: that's an ordinary edit, and a refresh legitimately overwrites it with the freshly detected/calculated value. Set any number you want to keep from the TUI instead.
 
 **Does this work with Ollama?**
 Yes, and properly — it talks to Ollama's native API, not just its OpenAI-compatible shim, so context window, reasoning, vision, size, quantization, and loaded state all get detected automatically. Point it at `http://localhost:11434`, with or without `/v1`.
@@ -148,7 +154,7 @@ The tier sweep reuses the same endpoint, which makes it free where SGLang's cost
 
 vLLM's `/v1/models` never carries reasoning or vision data; its detector exists only to label the backend `[vLLM]` correctly, not to unlock extra metadata.
 
-**Known limitation — vLLM vision/reasoning.** Nothing in vLLM's public API says whether the served model supports images or reasoning, so both always come back `false`/text-only for `[vLLM]` servers, even for VLMs. (vLLM does have an internal `/server_info` debug endpoint that carries this, gated behind a `VLLM_SERVER_DEV_MODE=1` env var — but it's undocumented, dumps your full server config on request, and its system-info collection is known to crash on some setups, so this extension deliberately doesn't probe it.) If a tag is wrong for your model, use **✎ Edit model capabilities** in the server's sub-menu to flip vision/reasoning by hand — same effect as editing `settings.json` directly, just without leaving Pi. It survives until the next **↺ Refresh**, which overwrites it with whatever the server reports.
+**Known limitation — vLLM vision/reasoning.** Nothing in vLLM's public API says whether the served model supports images or reasoning, so both always come back `false`/text-only for `[vLLM]` servers, even for VLMs. (vLLM does have an internal `/server_info` debug endpoint that carries this, gated behind a `VLLM_SERVER_DEV_MODE=1` env var — but it's undocumented, dumps your full server config on request, and its system-info collection is known to crash on some setups, so this extension deliberately doesn't probe it.) If a tag is wrong for your model, use **✎ Edit model capabilities** in the server's sub-menu to flip vision/reasoning by hand — same effect as editing `settings.json` directly, just without leaving Pi. Unlike a `settings.json` edit it **persists across ↺ Refresh** — tap back to the server's value to clear it.
 
 **ds4** ([antirez/ds4](https://github.com/antirez/ds4), "DwarfStar") serves nothing outside `/v1` — no `/health`, `/props` or `/version`, and no `Server` header — so it can't be probed the way the backends above are. It's identified instead by the one thing `ds4_server.c` hard-codes onto every model card, `"owned_by":"ds4.c"`, which the generic `/v1/models` request already fetches. Three things on those cards are read from ds4's source rather than taken at face value:
 
@@ -219,6 +225,7 @@ Stored under the `localllm` key in `~/.pi/agent/settings.json`:
             "id": "Qwen/Qwen2.5-Coder-7B-Instruct",
             "name": "Qwen2.5-Coder-7B-Instruct",
             "contextWindow": 32768,
+            "contextWindowOverride": 131072,
             "maxTokens": 8192,
             "reasoning": false,
             "input": ["text"]
@@ -230,7 +237,16 @@ Stored under the `localllm` key in `~/.pi/agent/settings.json`:
 }
 ```
 
-Hand edits stick until the next **↺ Refresh**, which overwrites every model field with fresh live values — the server is always the source of truth. Useful for correcting a field the server misreports, or for dropping a model locally without changing anything on the server.
+Hand edits stick until the next **↺ Refresh**, which overwrites the detected fields with fresh live values — the server is always the source of truth. The exception is the `*Override` fields the TUI manages (below), which survive refresh. Hand-editing a raw field like `maxTokens` or `reasoning` here will still be reset by a refresh; use **✎ Edit model capabilities** for anything you want to keep.
+
+### Editing capabilities manually
+
+Add/reconfigure pulls every model field from the server, and a backend that can't be asked about something comes back with a placeholder rather than a number you'd have to correct — vLLM never reports vision or reasoning, an OpenAI-compatible **llama-swap** proxy reports neither a capability nor a window (so it lands on this extension's 32,768 fallback), and the `capTokens` half-window rule may not match a server's real output limit. **✎ Edit model capabilities** lets you fix all five by hand — vision, reasoning, context window, max output and temperature — one model at a time, since model ids are unique. Each manual value:
+
+- Is stored separately, next to the detected one (`contextWindowOverride`, `maxTokensOverride`, `reasoningOverride`, `visionOverride`, `temperatureOverride`), and **survives ↺ Refresh and ✎ Reconfigure**: it's re-attached to the freshly detected model by id, so you can refresh as often as you like without losing it. (Overrides made by hand-editing `settings.json` before this model existed can't be told apart from detected values — those still reset on the first refresh after upgrading.)
+- Wins over whatever the server reports. The model list marks an overridden context window and max output with a `*` (e.g. `ctx 128k*, max 64k*`).
+- Is cleared by emptying the input for a number, or by toggling back to the server's value for vision/reasoning; the fresh detected value then shows through again.
+- While only the context window is overridden, the max-output cap is re-derived from it with the same half-window rule as everywhere else (`capTokens`), so a raised window raises the cap too. A manual **Max output** value wins over that derivation and is used verbatim — for when the half-window rule's 8k/64k ceilings don't match the server's real limit, or the detected value keeps getting overwritten otherwise.
 
 ### Why `maxTokens` is so much larger for a reasoning model
 
@@ -245,13 +261,13 @@ Hence the fallback where a backend reports no limit of its own:
 | Reasoning model | `min(context ÷ 2, 65536)` |
 | Everything else | `min(context ÷ 2, 8192)` |
 
-Backends that *do* report a real limit — MTPLX's `max_response_tokens`, oMLX's `max_tokens`, an OpenRouter-style `max_completion_tokens` below the context window — are believed over both.
+Backends that *do* report a real limit — MTPLX's `max_response_tokens`, oMLX's `max_tokens`, an OpenRouter-style `max_completion_tokens` below the context window — are believed over both. A manual **Max output** (a `maxTokensOverride` set from **✎ Edit model capabilities**) is believed over every number above: it is used verbatim and survives ↺ Refresh like the other overrides.
 
 ### Sampling
 
 Nothing is sent unless a detector has a reason for it, so a server keeps applying its own `generation_config`. The one exception is Qwen on SGLang: Qwen publishes **0.6** for thinking mode, checkpoints commonly ship `1.0` in `generation_config`, and Pi names no temperature of its own — so `1.0` is what actually gets served. At that temperature a thinking model in an agent loop is prone to re-planning the same task until it runs out of budget. Detecting `model_type: qwen*` with a reasoning parser configured therefore sets `temperature: 0.6`, and no other family is guessed at.
 
-Any model's temperature can be set by hand from **✎ Edit model capabilities**, including back to "server default" by clearing it — like the other overrides there, until the next **↺ Refresh**.
+Any model's temperature can be set by hand from **✎ Edit model capabilities**, including back to "server default" by clearing it — like the other overrides there, it survives ↺ Refresh.
 
 A related sharp edge: a reported size of `0` means "not reported", not a zero-byte model. SGLang's Ollama shim sends `size: 0` for the very model it is serving. Detectors drop a zero rather than storing it, and the model list ignores one that a pre-existing config still carries, so neither shows up as `0.0G`.
 
