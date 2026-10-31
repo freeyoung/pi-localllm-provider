@@ -1066,6 +1066,65 @@ describe("detectOpenAI", () => {
     const result = await detectOpenAI("http://x/v1", "");
     expect(result.models[0].maxTokens).toBe(4096);
   });
+
+  it("reads portal-style card with snake_case and camelCase flags, tokens, and reasoning effort levels", async () => {
+    mockFetch({
+      "http://x/v1/models": {
+        data: [
+          {
+            id: "portal/snake",
+            max_input_tokens: 1048576,
+            max_output_tokens: 32768,
+            supports_reasoning: true,
+            supports_vision: false,
+            reasoning_effort_levels: ["none", "low", "medium", "high"],
+          },
+          {
+            id: "portal/camel",
+            maxInputTokens: 262144,
+            maxOutputTokens: 16384,
+            supportsReasoning: true,
+            supportsVision: true,
+            effortLevels: ["minimal", "low", "medium", "high", "max"],
+          },
+        ],
+      },
+    });
+    const result = await detectOpenAI("http://x/v1", "");
+    expect(result.models[0]).toMatchObject({
+      id: "portal/snake",
+      contextWindow: 1048576,
+      maxTokens: 32768,
+      reasoning: true,
+      input: ["text"],
+      compat: { supportsReasoningEffort: true },
+      thinkingLevelMap: {
+        off: "none",
+        minimal: "low",
+        low: "low",
+        medium: "medium",
+        high: "high",
+        xhigh: "high",
+        max: "high",
+      },
+    });
+    expect(result.models[1]).toMatchObject({
+      id: "portal/camel",
+      contextWindow: 262144,
+      maxTokens: 16384,
+      reasoning: true,
+      input: ["text", "image"],
+      compat: { supportsReasoningEffort: true },
+      thinkingLevelMap: {
+        minimal: "minimal",
+        low: "low",
+        medium: "medium",
+        high: "high",
+        xhigh: "high",
+        max: "max",
+      },
+    });
+  });
 });
 
 // A card as ds4_server.c actually emits it — same shape for every alias,
