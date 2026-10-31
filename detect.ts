@@ -903,11 +903,24 @@ interface OpenAIModelCard {
   name?: string;
   owned_by?: string;
   max_model_len?: number;
+  max_input_tokens?: number;
+  max_output_tokens?: number;
+  max_completion_tokens?: number;
+  maxInputTokens?: number;
+  maxOutputTokens?: number;
+  maxCompletionTokens?: number;
   context_window?: number;
   context_length?: number;
   top_provider?: { context_length?: number; max_completion_tokens?: number };
   architecture?: { input_modalities?: string[] };
   supported_parameters?: string[];
+  supports_reasoning?: boolean;
+  supports_vision?: boolean;
+  capabilities?: { reasoning?: boolean; vision?: boolean };
+  reasoning_effort_levels?: string[];
+  supported_reasoning_efforts?: string[];
+  reasoning_efforts?: string[];
+  effort_levels?: string[];
 }
 
 interface OpenAIModels {
@@ -917,6 +930,55 @@ interface OpenAIModels {
 function firstNumber(...values: unknown[]): number | undefined {
   for (const v of values) if (typeof v === "number" && v > 0) return v;
   return undefined;
+}
+
+// "supports_reasoning" -> "supportsReasoning": portals vary between snake
+// and camel casing for the same field, so each name is tried both ways.
+function camel(name: string): string {
+  return name.replace(/_([a-z])/g, (_, c) => c.toUpperCase());
+}
+
+// Portals that front an OpenAI-compatible API (Roo-style /v1/models cards)
+// declare capabilities with boolean fields rather than OpenRouter-style
+// supported_parameters. Only an explicit true/false counts — undefined means
+// the card simply doesn't say, which is not the same as "no".
+function declaredFlag(m: OpenAIModelCard, names: string[]): boolean | undefined {
+  // SAFETY: OpenAIModelCard represents an open API response payload that may contain arbitrary provider-specific keys.
+  const raw = m as unknown as Record<string, unknown>;
+  for (const name of names) {
+    for (const key of [name, camel(name)]) {
+      const v = raw[key];
+      if (typeof v === "boolean") return v;
+    }
+  }
+  const caps = m.capabilities as Record<string, unknown> | undefined;
+  if (caps) for (const name of names) {
+    const v = caps[name];
+    if (typeof v === "boolean") return v;
+  }
+  return undefined;
+}
+
+// A card's advertised effort list, restricted to the tier names Pi can map
+// ("none".."max"). Empty/absent means the card doesn't publish one.
+function declaredEfforts(m: OpenAIModelCard): string[] {
+  // SAFETY: OpenAIModelCard represents an open API response payload that may contain arbitrary provider-specific keys.
+  const raw = m as unknown as Record<string, unknown>;
+  for (const name of [
+    "reasoning_effort_levels",
+    "supported_reasoning_efforts",
+    "reasoning_efforts",
+    "effort_levels",
+  ]) {
+    for (const key of [name, camel(name)]) {
+      const v = raw[key];
+      if (Array.isArray(v) && v.length > 0 && v.every((x) => typeof x === "string")) {
+        const tiers = v.filter((x) => (THINKING_TIERS as readonly string[]).includes(x));
+        if (tiers.length > 0) return tiers;
+      }
+    }
+  }
+  return [];
 }
 
 // ─── ds4 (antirez/ds4, "DwarfStar") ────────────────────────────────
@@ -1235,6 +1297,8 @@ export async function detectOpenAI(
       const contextWindow =
         firstNumber(
           m.max_model_len,
+          m.max_input_tokens,
+          m.maxInputTokens,
           m.top_provider?.context_length,
           m.context_window,
           m.context_length,
@@ -1242,26 +1306,58 @@ export async function detectOpenAI(
 
       const params = m.supported_parameters ?? [];
       const modalities = m.architecture?.input_modalities ?? [];
-      const reasoning = params.includes("reasoning_effort") || params.includes("include_reasoning");
+      const declaredReasoning = declaredFlag(m, ["supports_reasoning", "reasoning"]);
+      const reasoning =
+        params.includes("reasoning_effort") ||
+        params.includes("include_reasoning") ||
+        declaredReasoning === true;
+      const declaredVision = declaredFlag(m, ["supports_vision", "vision"]);
+      const vision = modalities.includes("image") || declaredVision === true;
 
       // A declared output ceiling is only trusted when it is a real
       // restriction. Cards that repeat the whole context window here mean
       // "no separate output limit", and taking that literally would make
       // every request reserve the entire window for the response.
-      const declaredMax = firstNumber(m.top_provider?.max_completion_tokens);
+      const declaredMax = firstNumber(
+        m.top_provider?.max_completion_tokens,
+        m.max_output_tokens,
+        m.maxOutputTokens,
+        m.max_completion_tokens,
+        m.maxCompletionTokens,
+      );
       const maxTokens =
         declaredMax !== undefined && declaredMax < contextWindow
           ? declaredMax
           : capTokens(contextWindow, reasoning);
 
-      return {
+      const result: DiscoveredModel = {
         id: m.id,
         name: m.name || (m.id.split("/").pop() ?? m.id),
         contextWindow,
         maxTokens,
         reasoning,
-        input: (modalities.includes("image") ? ["text", "image"] : ["text"]) as ("text" | "image")[],
+        input: (vision ? ["text", "image"] : ["text"]) as ("text" | "image")[],
       };
+
+      // If the card publishes its accepted effort tiers, register the map
+      // directly instead of relying on the probe sweep: unmapped levels get
+      // null so Pi stops offering tiers the model cannot take, and the level
+      // Pi actually sends is rewritten to a string the portal accepts.
+      const efforts = declaredEfforts(m);
+      if (efforts.length > 0) {
+        result.compat = { supportsReasoningEffort: true };
+        result.thinkingLevelMap = {
+          ...(efforts.includes("none") ? { off: "none" } : {}),
+          ...Object.fromEntries(
+            PI_LEVELS.filter((l) => l !== "off").map((level) => {
+              const tier = nearestTier(level, efforts);
+              return [level, tier ?? null];
+            }),
+          ),
+        } as Partial<Record<ThinkingLevel, string | null>>;
+      }
+
+      return result;
     }),
   };
 }
